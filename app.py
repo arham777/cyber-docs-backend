@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
@@ -11,17 +11,23 @@ import time
 from pathlib import Path
 import logging
 import sys
+import platform
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('app.log')
+    ]
 )
 logger = logging.getLogger(__name__)
 
 # Import your existing document processing functions
 try:
     from main import apply_branding_to_docx, convert_pdf_to_docx
+    logger.info("Successfully imported processing functions")
 except ImportError as e:
     logger.error(f"Failed to import processing functions: {e}")
     sys.exit(1)
@@ -49,6 +55,11 @@ try:
     # Create directories if they don't exist
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Base directory: {BASE_DIR}")
+    logger.info(f"Upload directory: {UPLOAD_DIR}")
+    logger.info(f"Output directory: {OUTPUT_DIR}")
+    logger.info(f"Template file: {TEMPLATE_DOCX}")
 
     # Verify template exists
     if not TEMPLATE_DOCX.exists():
@@ -61,6 +72,61 @@ except Exception as e:
 
 # Store job statuses in a more reliable way
 processing_jobs = {}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        # Check if template exists
+        template_exists = TEMPLATE_DOCX.exists()
+        
+        # Check directory permissions
+        upload_writable = os.access(UPLOAD_DIR, os.W_OK)
+        output_writable = os.access(OUTPUT_DIR, os.W_OK)
+        
+        # Get system info
+        system_info = {
+            "python_version": platform.python_version(),
+            "system": platform.system(),
+            "machine": platform.machine(),
+            "platform": sys.platform
+        }
+        
+        # Check disk space
+        try:
+            total, used, free = shutil.disk_usage(str(BASE_DIR))
+            disk_info = {
+                "total_gb": total // (2**30),
+                "used_gb": used // (2**30),
+                "free_gb": free // (2**30)
+            }
+        except Exception as e:
+            disk_info = {"error": str(e)}
+        
+        return {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "template_exists": template_exists,
+            "directories": {
+                "upload_dir": str(UPLOAD_DIR),
+                "upload_writable": upload_writable,
+                "output_dir": str(OUTPUT_DIR),
+                "output_writable": output_writable
+            },
+            "system": system_info,
+            "disk": disk_info,
+            "active_jobs": len(processing_jobs)
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": time.time()
+            }
+        )
 
 @app.get("/")
 async def root():
